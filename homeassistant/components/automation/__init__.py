@@ -227,6 +227,18 @@ def areas_in_automation(hass: HomeAssistant, entity_id: str) -> list[str]:
 
 
 @callback
+def automations_with_floor(hass: HomeAssistant, floor_id: str) -> list[str]:
+    """Return all automations that reference the floor."""
+    return _automations_with_x(hass, floor_id, "referenced_floors")
+
+
+@callback
+def floors_in_automation(hass: HomeAssistant, entity_id: str) -> list[str]:
+    """Return all floors in an automation."""
+    return _x_in_automation(hass, entity_id, "referenced_floors")
+
+
+@callback
 def automations_with_blueprint(hass: HomeAssistant, blueprint_path: str) -> list[str]:
     """Return all automations that reference the blueprint."""
     if DOMAIN not in hass.data:
@@ -354,6 +366,11 @@ class BaseAutomationEntity(ToggleEntity, ABC):
     def referenced_entities(self) -> set[str]:
         """Return a set of referenced entities."""
 
+    @property
+    @abstractmethod
+    def referenced_floors(self) -> set[str]:
+        """Return a set of referenced floors."""
+
     @abstractmethod
     async def async_trigger(
         self,
@@ -407,6 +424,11 @@ class UnavailableAutomationEntity(BaseAutomationEntity):
     @property
     def referenced_entities(self) -> set[str]:
         """Return a set of referenced entities."""
+        return set()
+
+    @property
+    def referenced_floors(self) -> set[str]:
+        """Return a set of referenced floors."""
         return set()
 
     async def async_trigger(
@@ -526,6 +548,11 @@ class AutomationEntity(BaseAutomationEntity, RestoreEntity):
 
         self._referenced_entities = referenced
         return referenced
+
+    @property
+    def referenced_floors(self) -> set[str]:
+        """Return a set of referenced floors."""
+        return self.action_script.referenced_floors
 
     async def async_added_to_hass(self) -> None:
         """Startup with initial state or previous state."""
