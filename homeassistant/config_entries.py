@@ -82,6 +82,9 @@ SOURCE_UNIGNORE = "unignore"
 # This is used to signal that re-authentication is required by the user.
 SOURCE_REAUTH = "reauth"
 
+# This is used to initiate a reconfigure flow by the user.
+SOURCE_RECONFIGURE = "reconfigure"
+
 HANDLERS: Registry[str, type[ConfigFlow]] = Registry()
 
 STORAGE_KEY = "core.config_entries"
@@ -221,6 +224,7 @@ class ConfigEntry:
         "unique_id",
         "supports_unload",
         "supports_remove_device",
+        "supports_reconfigure",
         "pref_disable_new_entities",
         "pref_disable_polling",
         "source",
@@ -233,6 +237,7 @@ class ConfigEntry:
         "_on_unload",
         "reload_lock",
         "_reauth_lock",
+        "_reconfigure_lock",
         "_tasks",
         "_background_tasks",
         "_integration_for_domain",
@@ -318,6 +323,9 @@ class ConfigEntry:
         # Supports remove device
         self.supports_remove_device: bool | None = None
 
+        # Supports reconfigure
+        self.supports_reconfigure: bool | None = None
+
         # Listeners to call on update
         self.update_listeners: list[UpdateListenerType] = []
 
@@ -336,6 +344,8 @@ class ConfigEntry:
         self.reload_lock = asyncio.Lock()
         # Reauth lock to prevent concurrent reauth flows
         self._reauth_lock = asyncio.Lock()
+        # Reconfigure lock to prevent concurrent reconfigure flows
+        self._reconfigure_lock = asyncio.Lock()
 
         self._tasks: set[asyncio.Future[Any]] = set()
         self._background_tasks: set[asyncio.Future[Any]] = set()
@@ -374,6 +384,10 @@ class ConfigEntry:
             self.supports_unload = await support_entry_unload(hass, self.domain)
         if self.supports_remove_device is None:
             self.supports_remove_device = await support_remove_from_device(
+                hass, self.domain
+            )
+        if self.supports_reconfigure is None:
+            self.supports_reconfigure = await support_entry_reconfigure(
                 hass, self.domain
             )
 
@@ -784,6 +798,47 @@ class ConfigEntry:
                 self.domain,
                 context={
                     "source": SOURCE_REAUTH,
+                    "entry_id": self.entry_id,
+                    "title_placeholders": {"name": self.title},
+                    "unique_id": self.unique_id,
+                }
+                | (context or {}),
+                data=self.data | (data or {}),
+            )
+
+    @callback
+    def async_start_reconfigure(
+        self,
+        hass: HomeAssistant,
+        context: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Start a reconfigure flow."""
+        # We will check this again in the task when we hold the lock,
+        # but we also check it now to try to avoid creating the task.
+        if any(self.async_get_active_flows(hass, {SOURCE_RECONFIGURE})):
+            # Reconfigure flow already in progress for this entry
+            return
+        hass.async_create_task(
+            self._async_init_reauth(hass, context, data),
+            f"config entry reconfigure {self.title} {self.domain} {self.entry_id}",
+        )
+
+    async def _async_init_reconfigure(
+        self,
+        hass: HomeAssistant,
+        context: dict[str, Any] | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Start a reconfigure flow."""
+        async with self._reconfigure_lock:
+            if any(self.async_get_active_flows(hass, {SOURCE_RECONFIGURE})):
+                # Reconfigure flow already in progress for this entry
+                return
+            await hass.config_entries.flow.async_init(
+                self.domain,
+                context={
+                    "source": SOURCE_RECONFIGURE,
                     "entry_id": self.entry_id,
                     "title_placeholders": {"name": self.title},
                     "unique_id": self.unique_id,
@@ -2180,6 +2235,15 @@ async def support_remove_from_device(hass: HomeAssistant, domain: str) -> bool:
     integration = await loader.async_get_integration(hass, domain)
     component = integration.get_component()
     return hasattr(component, "async_remove_config_entry_device")
+
+
+async def support_entry_reconfigure(hass: HomeAssistant, domain: str) -> bool:
+    """Test if a domain supports entry unloading."""
+    if loader.is_component_module_loaded(hass, f"{domain}.config_flow") and (
+        HANDLERS.get(domain)
+    ):
+        return True
+    return False
 
 
 async def _load_integration(
